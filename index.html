@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Animasi Atom</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;background:#03060d}
+  body{
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  #stage{position:fixed;inset:0}
+  canvas{display:block;width:100%;height:100%}
+
+  /* ---------- NAVBAR MINI ---------- */
+  #nav{
+    position:fixed;top:14px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:7px;
+    padding:7px 11px;border-radius:999px;
+    background:rgba(11,18,36,.55);
+    border:1px solid rgba(110,165,255,.16);
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+    box-shadow:0 8px 26px rgba(0,0,0,.35);
+    opacity:.22;                     /* hampir tak terlihat */
+    transition:opacity .35s ease;
+    z-index:10;
+  }
+  #nav:hover,#nav:focus-within{opacity:1}
+
+  .dot{
+    appearance:none;border:0;padding:0;cursor:pointer;
+    width:9px;height:9px;border-radius:50%;
+    background:rgba(150,190,255,.30);
+    transition:background .2s, box-shadow .2s, transform .2s;
+  }
+  .dot:hover{background:rgba(150,200,255,.65)}
+  .dot.on{
+    background:#5aa8ff;
+    box-shadow:0 0 0 3px rgba(90,168,255,.16), 0 0 12px rgba(90,168,255,.9);
+    transform:scale(1.15);
+  }
+
+  .sep{width:1px;height:14px;background:rgba(120,170,255,.18)}
+
+  #pp{
+    appearance:none;border:0;background:transparent;cursor:pointer;
+    color:rgba(180,210,255,.65);
+    font-size:11px;line-height:1;
+    width:16px;height:16px;display:grid;place-items:center;
+    transition:color .2s;
+  }
+  #pp:hover{color:#eaf3ff}
+
+  /* ---------- PROGRESS ---------- */
+  #prog{
+    position:fixed;left:0;bottom:0;height:2px;width:0%;
+    background:linear-gradient(90deg,#3d8bff,#7ee7ff);
+    box-shadow:0 0 10px rgba(90,180,255,.7);
+    transition:width .08s linear;
+    z-index:10;
+  }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+
+<nav id="nav" aria-label="Kontrol animasi"></nav>
+<div id="prog"></div>
+
+<script>
+/* =========================================================
+   UTIL
+   ========================================================= */
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const lerp=(a,b,t)=>a+(b-a)*t;
+const easeInOut=t=>t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+const easeOut=t=>1-Math.pow(1-t,3);
+const smoothstep=(e0,e1,x)=>{const t=clamp((x-e0)/(e1-e0),0,1);return t*t*(3-2*t);};
+
+function wl2rgb(wl){
+  let r=0,g=0,b=0;
+  if(wl>=380&&wl<440){r=-(wl-440)/60;b=1;}
+  else if(wl<490){g=(wl-440)/50;b=1;}
+  else if(wl<510){g=1;b=-(wl-510)/20;}
+  else if(wl<580){r=(wl-510)/70;g=1;}
+  else if(wl<645){r=1;g=-(wl-645)/65;}
+  else if(wl<=780){r=1;}
+  let f=1;
+  if(wl>=380&&wl<420) f=0.35+0.65*(wl-380)/40;
+  else if(wl>700&&wl<=780) f=0.35+0.65*(780-wl)/80;
+  const gm=0.85;
+  return [
+    Math.round(255*Math.pow(clamp(r*f,0,1),gm)),
+    Math.round(255*Math.pow(clamp(g*f,0,1),gm)),
+    Math.round(255*Math.pow(clamp(b*f,0,1),gm))
+  ];
+}
+const C=(wl,a=1)=>{const c=wl2rgb(wl);return `rgba(${c[0]},${c[1]},${c[2]},${a})`;};
+
+/* =========================================================
+   SETUP
+   ========================================================= */
+const canvas=document.getElementById('cv');
+const ctx=canvas.getContext('2d');
+let W=0,H=0,S=1,TS=1;
+
+function resize(){
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  W=canvas.clientWidth||window.innerWidth;
+  H=canvas.clientHeight||window.innerHeight;
+  canvas.width=Math.max(1,Math.round(W*dpr));
+  canvas.height=Math.max(1,Math.round(H*dpr));
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  S=clamp(Math.min(W/880,H/700),0.42,1.45);
+  TS=clamp(S,0.78,1.25);
+}
+window.addEventListener('resize',resize);
+
+/* =========================================================
+   SKENARIO
+   ========================================================= */
+const SCENES=[
+  { dur:5.6 },   // 1 struktur atom
+  { dur:6.2 },   // 2 absorpsi
+  { dur:6.2 },   // 3 emisi
+  { dur:7.2 },   // 4 perbedaan transisi
+  { dur:9.5 }    // 5 spektrum
+];
+
+let sceneIndex=0, sceneTime=0, lastTs=0, paused=false;
+
+/* =========================================================
+   GEOMETRI
+   ========================================================= */
+const R=n=>(46+13*n*n)*S;
+const NUC=()=>15*S;
+
+/* =========================================================
+   PRIMITIF
+   ========================================================= */
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+function drawNucleus(cx,cy,t){
+  const rad=NUC();
+  const g=ctx.createRadialGradient(cx,cy,0,cx,cy,rad*4.4);
+  g.addColorStop(0,'rgba(255,180,100,0.42)');
+  g.addColorStop(0.32,'rgba(255,110,60,0.14)');
+  g.addColorStop(1,'rgba(255,80,40,0)');
+  ctx.fillStyle=g;
+  ctx.beginPath();ctx.arc(cx,cy,rad*4.4,0,Math.PI*2);ctx.fill();
+
+  const N=14;
+  for(let i=0;i<N;i++){
+    const a=i*2.39996+t*0.45;
+    const rr=rad*0.60*Math.sqrt((i+0.6)/N);
+    const x=cx+Math.cos(a)*rr, y=cy+Math.sin(a)*rr;
+    ctx.beginPath();ctx.arc(x,y,rad*0.31,0,Math.PI*2);
+    ctx.fillStyle=i%2?'rgba(255,118,72,0.95)':'rgba(255,196,116,0.95)';
+    ctx.fill();
+  }
+  ctx.beginPath();ctx.arc(cx,cy,rad*0.46,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,238,200,0.95)';ctx.fill();
+}
+
+function drawOrbits(cx,cy,activeN){
+  for(let n=1;n<=4;n++){
+    const r=R(n);
+    const on=Math.abs(activeN-n)<0.06;
+    ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+    ctx.strokeStyle=on?'rgba(120,215,255,0.55)':'rgba(120,170,255,0.14)';
+    ctx.lineWidth=(on?1.8:1)*Math.max(S,0.7);
+    ctx.stroke();
+  }
+}
+
+function drawOrbitLabels(cx,cy,activeN){
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  for(let n=1;n<=4;n++){
+    const r=R(n);
+    const on=Math.abs(activeN-n)<0.06;
+    const size=Math.round((on?12.5:11.5)*TS);
+    ctx.font=`700 ${size}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
+    ctx.fillStyle=on?'rgba(160,225,255,0.95)':'rgba(140,180,240,0.42)';
+    ctx.fillText('n='+n, cx, cy+r+16*S);
+
+    const e=(-13.6/(n*n)).toFixed(1).replace('.',',');
+    ctx.font=`500 ${Math.round(9.5*TS)}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
+    ctx.fillStyle='rgba(140,180,240,0.30)';
+    ctx.fillText(e+' eV', cx, cy+r+16*S+13*TS);
+  }
+}
+
+function drawElectron(x,y){
+  const r=6.2*S;
+  const g=ctx.createRadialGradient(x,y,0,x,y,r*4.5);
+  g.addColorStop(0,'rgba(170,245,255,0.65)');
+  g.addColorStop(1,'rgba(70,190,255,0)');
+  ctx.fillStyle=g;
+  ctx.beginPath();ctx.arc(x,y,r*4.5,0,Math.PI*2);ctx.fill();
+
+  ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);
+  ctx.fillStyle='#7fe9ff';ctx.fill();
+  ctx.lineWidth=1.2*S;ctx.strokeStyle='rgba(255,255,255,0.92)';ctx.stroke();
+}
+
+function drawArrowHead(x,y,ang,size,color){
+  ctx.save();ctx.translate(x,y);ctx.rotate(ang);
+  ctx.beginPath();
+  ctx.moveTo(0,0);
+  ctx.lineTo(-size,size*0.6);
+  ctx.lineTo(-size*0.6,0);
+  ctx.lineTo(-size,-size*0.6);
+  ctx.closePath();
+  ctx.fillStyle=color;
+  ctx.shadowColor=color;ctx.shadowBlur=10;
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawRadialArrow(cx,cy,ang,r1,r2,color,prog,w){
+  if(prog<=0) return;
+  const ux=Math.cos(ang),uy=Math.sin(ang);
+  const x1=cx+ux*r1,y1=cy+uy*r1;
+  const x2=cx+ux*r2,y2=cy+uy*r2;
+  const px=lerp(x1,x2,prog),py=lerp(y1,y2,prog);
+
+  ctx.save();
+  ctx.strokeStyle=color;
+  ctx.lineWidth=w;
+  ctx.lineCap='round';
+  ctx.shadowColor=color;ctx.shadowBlur=14;
+  ctx.globalAlpha=0.95;
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(px,py);ctx.stroke();
+
+  const dir=Math.atan2(y2-y1,x2-x1);
+  drawArrowHead(px,py,dir,11*S,color);
+  ctx.restore();
+}
+
+function drawPhotonPacket(x,y,dx,dy,len,wlPx,amp,color,phase,alpha){
+  if(alpha<=0.01) return;
+  const px=-dy,py=dx;
+  const steps=64;
+  ctx.save();
+  ctx.globalAlpha=alpha;
+  ctx.beginPath();
+  for(let i=0;i<=steps;i++){
+    const s=i/steps;
+    const d=(s-0.5)*len;
+    const env=Math.sin(Math.PI*s);
+    const off=Math.sin(d/wlPx*Math.PI*2+phase)*amp*env;
+    const xx=x+dx*d+px*off;
+    const yy=y+dy*d+py*off;
+    i===0?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy);
+  }
+  ctx.strokeStyle=color;
+  ctx.lineWidth=2.6*S;
+  ctx.lineCap='round';
+  ctx.lineJoin='round';
+  ctx.shadowColor=color;ctx.shadowBlur=16;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawTag(x,y,text,color,align='center'){
+  ctx.save();
+  ctx.textAlign=align;ctx.textBaseline='middle';
+  const size=Math.round(12*TS);
+  ctx.font=`700 ${size}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
+  const w=ctx.measureText(text).width;
+  const padX=9*TS, padY=6*TS;
+  const bx = align==='center' ? x-w/2-padX : (align==='left'? x-padX : x-w-padX);
+  const by = y-size/2-padY;
+
+  ctx.fillStyle='rgba(8,14,28,0.78)';
+  ctx.strokeStyle=color.replace(/[\d.]+\)$/,'0.5)');
+  ctx.lineWidth=1;
+  roundRect(bx,by,w+padX*2,size+padY*2,8*TS);
+  ctx.fill();ctx.stroke();
+
+  ctx.fillStyle=color;
+  ctx.fillText(text, align==='center'?x:(align==='left'?x:x-w), y+0.5);
+  ctx.restore();
+}
+
+/* =========================================================
+   STATE ELEKTRON
+   ========================================================= */
+function electronState(t){
+  const s=sceneIndex;
+  if(s===0){
+    return {n:1, a:-Math.PI/2+t*1.05};
+  }
+  if(s===1){
+    const A0=-Math.PI/2;
+    if(t<1.40) return {n:1, a:A0+t*0.35};
+    if(t<2.40){ const p=easeInOut((t-1.40)/1.0); return {n:1+2*p, a:A0+1.40*0.35}; }
+    return {n:3, a:A0+1.40*0.35+(t-2.40)*0.52};
+  }
+  if(s===2){
+    const A0=-Math.PI/2+0.5;
+    if(t<1.00) return {n:3, a:A0+t*0.50};
+    if(t<1.60){ const p=easeInOut((t-1.00)/0.6); return {n:3-p, a:A0+0.50}; }
+    return {n:2, a:A0+0.50+(t-1.60)*0.85};
+  }
+  if(s===3){
+    return {n:2, a:-Math.PI/2+t*0.80};
+  }
+  return {n:1,a:0};
+}
+
+/* =========================================================
+   RENDER
+   ========================================================= */
+function render(){
+  ctx.clearRect(0,0,W,H);
+  const cx=W/2, cy=H/2, t=sceneTime, s=sceneIndex;
+
+  if(s<4){
+    const st=electronState(t);
+    drawOrbits(cx,cy,st.n);
+    drawOrbitLabels(cx,cy,st.n);
+    drawNucleus(cx,cy,t);
+  }
+
+  /* ---------- 1. STRUKTUR ---------- */
+  if(s===0){
+    const st=electronState(t);
+    const ex=cx+Math.cos(st.a)*R(st.n);
+    const ey=cy+Math.sin(st.a)*R(st.n);
+
+    const pulse=(t%1.6)/1.6;
+    ctx.beginPath();
+    ctx.arc(cx,cy,R(1)*(1+pulse*0.35),0,Math.PI*2);
+    ctx.strokeStyle=`rgba(110,215,255,${0.35*(1-pulse)})`;
+    ctx.lineWidth=2*S;ctx.stroke();
+
+    drawElectron(ex,ey);
+    drawTag(cx, cy - R(4) - 34*S, 'Tingkat energi diskret — elektron tidak bisa di antaranya', 'rgba(150,205,255,0.9)');
+  }
+
+  /* ---------- 2. ABSORPSI ---------- */
+  if(s===1){
+    const A0=-Math.PI/2;
+    const jumpA=A0+1.40*0.35;
+    const ux=Math.cos(jumpA), uy=Math.sin(jumpA);
+    const tx=cx+ux*R(1), ty=cy+uy*R(1);
+
+    if(t<1.42){
+      const p=clamp(t/1.35,0,1);
+      const e=easeInOut(p);
+      const sx=W+70;
+      const px=lerp(sx,tx,e);
+      drawPhotonPacket(px,ty,-1,0,160*S,52,9*S,C(486,1),t*16,1);
+    }
+
+    if(t>=1.35&&t<2.35){
+      const p=clamp((t-1.35)/1.0,0,1);
+      ctx.beginPath();
+      ctx.arc(tx,ty,10*S+p*62*S,0,Math.PI*2);
+      ctx.strokeStyle=`rgba(140,225,255,${(1-p)*0.75})`;
+      ctx.lineWidth=2.6*S;ctx.stroke();
+    }
+
+    const prog=smoothstep(1.38,2.36,t);
+    drawRadialArrow(cx,cy,jumpA,R(1),R(3),'rgba(255,214,90,0.95)',prog,3.2*S);
+
+    if(t>1.5){
+      const mx=cx+ux*R(2)+ (ux>0?1:-1)*46*S;
+      const my=cy+uy*R(2)-10*S;
+      drawTag(mx,my,'Foton diserap','rgba(255,214,90,0.95)');
+    }
+
+    const st=electronState(t);
+    drawElectron(cx+Math.cos(st.a)*R(st.n), cy+Math.sin(st.a)*R(st.n));
+
+    if(t>2.5) drawTag(cx, cy-R(4)-34*S, 'Keadaan tereksitasi','rgba(255,214,90,0.95)');
+  }
+
+  /* ---------- 3. EMISI ---------- */
+  if(s===2){
+    const A0=-Math.PI/2+0.5;
+    const jumpA=A0+0.50;
+    const ux=Math.cos(jumpA), uy=Math.sin(jumpA);
+
+    const prog=smoothstep(1.00,1.60,t);
+    drawRadialArrow(cx,cy,jumpA,R(3),R(2),C(656,0.95),prog,3.2*S);
+
+    if(t>1.60){
+      const p=clamp((t-1.60)/2.0,0,1);
+      const d=easeOut(p)*780*S;
+      const ox=cx+ux*R(3), oy=cy+uy*R(3);
+      const alpha=1-smoothstep(0.72,1,p);
+      drawPhotonPacket(ox+ux*d, oy+uy*d, ux, uy, 175*S, 68, 9*S, C(656,1), -t*15, alpha);
+    }
+
+    if(t>1.75){
+      const mx=cx+ux*R(3)+ (ux>0?1:-1)*40*S;
+      const my=cy+uy*R(3)+ (uy>0?1:-1)*44*S;
+      drawTag(mx,my,'Foton dipancarkan','rgba(255,120,105,0.95)');
+    }
+
+    const st=electronState(t);
+    drawElectron(cx+Math.cos(st.a)*R(st.n), cy+Math.sin(st.a)*R(st.n));
+
+    if(t>2.6) drawTag(cx, cy-R(4)-34*S, 'Kembali ke tingkat dasar','rgba(255,150,135,0.95)');
+  }
+
+  /* ---------- 4. PERBEDAAN TRANSISI ---------- */
+  if(s===3){
+    const st=electronState(t);
+    drawElectron(cx+Math.cos(st.a)*R(st.n), cy+Math.sin(st.a)*R(st.n));
+
+    const angA=-Math.PI*0.75;
+    const angB=-Math.PI*0.25;
+
+    const pA=smoothstep(0.45,1.45,t);
+    drawRadialArrow(cx,cy,angA,R(4),R(2),C(486,0.95),pA,3.2*S);
+
+    if(t>1.55){
+      const p=clamp((t-1.55)/1.9,0,1);
+      const d=easeOut(p)*680*S;
+      const ux=Math.cos(angA),uy=Math.sin(angA);
+      const ox=cx+ux*R(4), oy=cy+uy*R(4);
+      drawPhotonPacket(ox+ux*d,oy+uy*d,ux,uy,165*S,46,8.5*S,C(486,1),t*18,1-smoothstep(0.72,1,p));
+    }
+    if(t>0.9){
+      const x=cx+Math.cos(angA)*R(3)-58*S;
+      const y=cy+Math.sin(angA)*R(3)-16*S;
+      drawTag(x,y,'ΔE = 2,55 eV · 486 nm',C(486,0.95));
+    }
+
+    const pB=smoothstep(2.10,3.10,t);
+    drawRadialArrow(cx,cy,angB,R(3),R(2),C(656,0.95),pB,3.2*S);
+
+    if(t>3.20){
+      const p=clamp((t-3.20)/1.9,0,1);
+      const d=easeOut(p)*680*S;
+      const ux=Math.cos(angB),uy=Math.sin(angB);
+      const ox=cx+ux*R(3), oy=cy+uy*R(3);
+      drawPhotonPacket(ox+ux*d,oy+uy*d,ux,uy,190*S,72,8.5*S,C(656,1),-t*14,1-smoothstep(0.72,1,p));
+    }
+    if(t>2.55){
+      const x=cx+Math.cos(angB)*R(3)+58*S;
+      const y=cy+Math.sin(angB)*R(3)-16*S;
+      drawTag(x,y,'ΔE = 1,89 eV · 656 nm',C(656,0.95));
+    }
+
+    if(t>4.4) drawTag(cx, cy-R(4)-34*S, 'Selisih energi berbeda → warna foton berbeda','rgba(180,215,255,0.9)');
+  }
+
+  /* ---------- 5. SPEKTRUM ---------- */
+  if(s===4){
+    drawSpectrum(cx,cy,t);
+  }
+}
+
+/* =========================================================
+   SPEKTRUM
+   ========================================================= */
+function drawSpectrum(cx,cy,t){
+  const barW=Math.min(W*0.78,790);
+  const barH=Math.max(38*S,26);
+  const x0=cx-barW/2;
+  const y0=cy-barH/2+18*S;
+
+  ctx.save();
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.font=`700 ${Math.round(15*TS)}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
+  ctx.fillStyle='rgba(190,220,255,0.92)';
+  ctx.fillText('Spektrum Emisi Hidrogen — Deret Balmer', cx, y0-barH*1.9);
+  ctx.restore();
+
+  const g=ctx.createLinearGradient(x0,0,x0+barW,0);
+  for(let i=0;i<=32;i++){
+    const wl=380+(i/32)*400;
+    const c=wl2rgb(wl);
+    g.addColorStop(i/32,`rgba(${c[0]},${c[1]},${c[2]},0.20)`);
+  }
+  ctx.fillStyle=g;
+  roundRect(x0,y0,barW,barH,8);
+  ctx.fill();
+  ctx.strokeStyle='rgba(120,175,255,0.22)';
+  ctx.lineWidth=1;
+  ctx.stroke();
+
+  ctx.save();
+  ctx.textAlign='center';ctx.textBaseline='top';
+  ctx.font=`500 ${Math.round(10.5*TS)}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
+  ctx.fillStyle='rgba(140,180,240,0.42)';
+  ctx.fillText('380 nm', x0+2, y0+barH+6);
+  ctx.fillText('780 nm', x0+barW-2, y0+barH+6);
+  ctx.fillText('← ultraviolet', x0+barW*0.13, y0+barH+26*TS);
+  ctx.fillText('inframerah →', x0+barW*0.88, y0+barH+26*TS);
+  ctx.restore();
+
+  const lines=[
+    {wl:656.3,label:'656 nm',name:'Hα',at:0.9, above:false},
+    {wl:486.1,label:'486 nm',name:'Hβ',at:2.0, above:false},
+    {wl:434.0,label:'434 nm',name:'Hγ',at:3.1, above:true },
+    {wl:410.2,label:'410 nm',name:'Hδ',at:4.2, above:false}
+  ];
+
+  for(const L of lines){
+    const p=clamp((t-L.at)/0.55,0,1);
+    if(p<=0) continue;
+    const e=easeOut(p);
+    const x=x0+((L.wl-380)/400)*barW;
+    const col=C(L.wl,1);
+    const half=(barH/2+34*S)*e;
+
+    ctx.save();
+    ctx.globalAlpha=e;
+    ctx.strokeStyle=col;
+    ctx.lineWidth=3.2*S;
+    ctx.shadowColor=col;ctx.shadowBlur=22;
+    ctx.beginPath();ctx.moveTo(x,y0+barH/2-half);ctx.lineTo(x,y0+barH/2+half);ctx.stroke();
+
+    if(p<1){
+      ctx.beginPath();
+      ctx.arc(x,y0+barH/2,(1-p)*60*S,0,Math.PI*2);
+      ctx.strokeStyle=col.replace(/[\d.]+\)$/,'0.4)');
+      ctx.lineWidth=2;ctx.stroke();
+    }
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha=e;
+    ctx.textAlign='center';
+    ctx.textBaseline= L.above?'bottom':'top';
+    const ly = L.above ? y0-12*S : y0+barH+44*TS;
+    ctx.font=`700 ${Math.round(12.5*TS)}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
+    ctx.fillStyle=col;
+    ctx.fillText(L.label, x, ly);
+    ctx.font=`600 ${Math.round(10.5*TS)}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
+    ctx.fillStyle='rgba(190,215,255,0.6)';
+    ctx.fillText(L.name, x, L.above? ly-16*TS : ly+14*TS);
+    ctx.restore();
+  }
+
+  if(t>5.2){
+    const a=smoothstep(5.2,6.2,t);
+    ctx.save();
+    ctx.globalAlpha=a;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.font=`600 ${Math.round(12.5*TS)}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
+    ctx.fillStyle='rgba(165,200,245,0.85)';
+    ctx.fillText('Setiap garis = satu lompatan elektron antara dua tingkat energi', cx, y0+barH+92*TS);
+    ctx.restore();
+  }
+}
+
+/* =========================================================
+   LOOP
+   ========================================================= */
+function loop(ts){
+  requestAnimationFrame(loop);
+  if(!lastTs) lastTs=ts;
+  let dt=(ts-lastTs)/1000;
+  lastTs=ts;
+  dt=Math.min(dt,0.05);
+
+  if(!paused){
+    sceneTime+=dt;
+    if(sceneTime>SCENES[sceneIndex].dur){
+      goScene((sceneIndex+1)%SCENES.length);
+    }
+  }
+  render();
+  progEl.style.width=(clamp(sceneTime/SCENES[sceneIndex].dur,0,1)*100).toFixed(2)+'%';
+}
+
+/* =========================================================
+   NAVBAR MINI
+   ========================================================= */
+const navEl=document.getElementById('nav');
+const progEl=document.getElementById('prog');
+const dots=[];
+
+SCENES.forEach((_,i)=>{
+  const b=document.createElement('button');
+  b.className='dot';
+  b.title='Adegan '+(i+1);
+  b.setAttribute('aria-label','Adegan '+(i+1));
+  b.addEventListener('click',()=>goScene(i));
+  navEl.appendChild(b);
+  dots.push(b);
+});
+
+const sep=document.createElement('span');
+sep.className='sep';
+navEl.appendChild(sep);
+
+const ppBtn=document.createElement('button');
+ppBtn.id='pp';
+ppBtn.textContent='❚❚';
+ppBtn.title='Jeda / Lanjut';
+ppBtn.setAttribute('aria-label','Jeda atau lanjutkan');
+ppBtn.addEventListener('click',togglePause);
+navEl.appendChild(ppBtn);
+
+function togglePause(){
+  paused=!paused;
+  ppBtn.textContent=paused?'▶':'❚❚';
+}
+
+function goScene(i){
+  sceneIndex=i;
+  sceneTime=0;
+  dots.forEach((d,k)=>d.classList.toggle('on',k===i));
+}
+
+/* keyboard: spasi, ←/→, 1-5 */
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault();togglePause();}
+  else if(e.code==='ArrowRight'){goScene((sceneIndex+1)%SCENES.length);}
+  else if(e.code==='ArrowLeft'){goScene((sceneIndex-1+SCENES.length)%SCENES.length);}
+  else if(/^Digit[1-5]$/.test(e.code)){goScene(+e.code.slice(5)-1);}
+});
+
+/* =========================================================
+   MULAI
+   ========================================================= */
+resize();
+goScene(0);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
